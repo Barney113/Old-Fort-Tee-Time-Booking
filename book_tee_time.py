@@ -19,9 +19,10 @@ if not GOLF_USERNAME or not GOLF_PASSWORD:
 
 
 async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
-    """Authenticates against CPS IdentityServer using the cps-web client credentials."""
+    """Authenticates against CPS IdentityServer using URL parameters for client credentials."""
     login_url = f"{IDENTITY_URL}/connect/token"
     
+    # CPS IdentityServer expects token credentials via URL parameters
     login_payload = {
         "grant_type": "password",
         "username": GOLF_USERNAME,
@@ -40,7 +41,8 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
     }
 
     print("[*] Authenticating with CPS IdentityServer...")
-    res = await client.post(login_url, data=login_payload, headers=headers)
+    # Send login_payload as query params and form data to satisfy strict CPS endpoint routing
+    res = await client.post(login_url, params=login_payload, data=login_payload, headers=headers)
     
     if res.status_code != 200:
         raise RuntimeError(f"Authentication failed ({res.status_code}): {res.text}")
