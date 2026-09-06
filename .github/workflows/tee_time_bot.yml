@@ -1,0 +1,32 @@
+name: Old Fort Tee Time Bot
+
+on:
+  workflow_dispatch:  # Allows manual triggers from GitHub UI
+  schedule:
+    # Runs daily at 12:55 AM CDT (05:55 UTC)
+    - cron: '55 5 * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx
+
+      - name: Execute Tee Time Bot
+        env:
+          GOLF_USERNAME: ${{ secrets.GOLF_USERNAME }}
+          GOLF_PASSWORD: ${{ secrets.GOLF_PASSWORD }}
+        run: |
+          python book_tee_time.py
