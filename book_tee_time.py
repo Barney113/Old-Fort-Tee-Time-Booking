@@ -19,24 +19,24 @@ if not GOLF_USERNAME or not GOLF_PASSWORD:
 
 
 async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
-    """Authenticates against CPS IdentityServer and returns full browser headers with Bearer token."""
+    """Authenticates against CPS IdentityServer using the cps-web client credentials."""
     login_url = f"{IDENTITY_URL}/connect/token"
     
     login_payload = {
+        "grant_type": "password",
         "username": GOLF_USERNAME,
         "password": GOLF_PASSWORD,
-        "grant_type": "password",
-        "client_id": "js1",
-        "scope": "customer email inventory onlinereservation openid profile recommend references sale sh",
+        "client_id": "cps-web",
+        "client_secret": "secret",
+        "scope": "openid profile email onlinereservation",
     }
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded",
         "Origin": BASE_URL,
         "Referer": f"{BASE_URL}/onlineresweb/search-teetime",
-        "Cache-Control": "no-cache",
     }
 
     print("[*] Authenticating with CPS IdentityServer...")
@@ -53,8 +53,13 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
         
     print("[+] Successfully authenticated.")
     
-    headers["Authorization"] = f"Bearer {token}"
-    return headers
+    return {
+        "User-Agent": headers["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {token}",
+        "Origin": BASE_URL,
+        "Referer": f"{BASE_URL}/onlineresweb/search-teetime",
+    }
 
 
 async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, selected_slot: dict) -> bool:
@@ -88,7 +93,7 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
 
     print(f"[+] SLOT LOCKED SUCCESSFULLY! Session: {locked_session_id}")
 
-    # Phase 2: Finalize Reservation Payload
+    # Phase 2: Finalize Reservation
     confirm_url = f"{ONLINE_API}/ReserveTeeTimes"
     reserve_payload = {
         "affiliateId": None,
@@ -180,7 +185,6 @@ async def main():
     target_date = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
     print(f"[*] Target Booking Date set to: {target_date}")
 
-    # verify=False bypasses OpenSSL self-signed certificate errors on host runners
     async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
         try:
             headers = await get_authenticated_headers(client)
