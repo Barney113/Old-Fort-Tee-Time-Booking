@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 GOLF_USERNAME = os.getenv("GOLF_USERNAME")
 GOLF_PASSWORD = os.getenv("GOLF_PASSWORD")
 
-# CPS / Golf Now API Endpoints (Adjust baseUrl if your course uses a custom tenant subdomain)
-BASE_URL = "https://cps-api.clubprophet.com" 
-ONLINE_API = f"{BASE_URL}/api/v1"
+# CPS / Old Fort Endpoints
+BASE_URL = "https://oldfort.cps.golf"
+IDENTITY_URL = f"{BASE_URL}/identityapi"
+ONLINE_API = f"{BASE_URL}/onlineres/onlineapi/api/v1/onlinereservation"
 
 if not GOLF_USERNAME or not GOLF_PASSWORD:
     print("[!] Error: GOLF_USERNAME or GOLF_PASSWORD environment variables not set.")
@@ -18,81 +19,101 @@ if not GOLF_USERNAME or not GOLF_PASSWORD:
 
 
 async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
-    """Authenticates against CPS API and returns authorized headers."""
-    login_url = f"{ONLINE_API}/auth/login"
-    payload = {
+    """Authenticates against CPS IdentityServer and returns full browser headers with Bearer token."""
+    login_url = f"{IDENTITY_URL}/connect/token"
+    
+    login_payload = {
         "username": GOLF_USERNAME,
-        "password": GOLF_PASSWORD
+        "password": GOLF_PASSWORD,
+        "grant_type": "password",
+        "client_id": "js1",
+        "scope": "customer email inventory onlinereservation openid profile recommend references sale sh",
     }
     
     headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": BASE_URL,
+        "Referer": f"{BASE_URL}/onlineresweb/search-teetime",
+        "Cache-Control": "no-cache",
     }
 
-    print("[*] Authenticating with Golf API...")
-    res = await client.post(login_url, json=payload, headers=headers)
+    print("[*] Authenticating with CPS IdentityServer...")
+    res = await client.post(login_url, data=login_payload, headers=headers)
     
     if res.status_code != 200:
         raise RuntimeError(f"Authentication failed ({res.status_code}): {res.text}")
     
     data = res.json()
-    token = data.get("token") or data.get("access_token")
+    token = data.get("access_token")
     
     if not token:
-        raise RuntimeError("Authentication succeeded but no token was returned.")
+        raise RuntimeError("Authentication succeeded but no access_token was returned.")
         
     print("[+] Successfully authenticated.")
     
-    return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": headers["User-Agent"]
-    }
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
-async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, slot: dict) -> bool:
-    """Executes Phase 1 (Lock Slot) and Phase 2 (Confirm Booking) for a given slot."""
-    slot_time = slot.get("startTime", "Unknown Time")
-    slot_id = slot.get("id") or slot.get("teeTimeId")
+async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, selected_slot: dict) -> bool:
+    """Executes Phase 1 (LockTeeTime) and Phase 2 (ReserveTeeTimes) for a selected slot."""
+    slot_time = selected_slot.get("startTime", "Unknown Time")
     
-    print(f"\n[*] ATTEMPTING LOCK on slot: {slot_time} (ID: {slot_id})")
+    print(f"\n[*] ATTEMPTING LOCK on slot: {slot_time}")
     
-    # Phase 1: Hold / Lock Tee Time
-    lock_url = f"{ONLINE_API}/HoldTeeTime"
+    # Phase 1: Lock Tee Time
+    lock_url = f"{ONLINE_API}/LockTeeTime"
     lock_payload = {
-        "teeTimeId": slot_id,
-        "players": 4,
-        "holes": 18
+        "teeSheetId": selected_slot.get("teeSheetId"),
+        "holes": 18,
+        "pax": 4,
+        "time": slot_time,
     }
     
     lock_res = await client.post(lock_url, json=lock_payload, headers=headers)
-    if lock_res.status_code not in (200, 201):
-        print(f"[!] Hold failed for {slot_time} ({lock_res.status_code}): {lock_res.text}")
+    if lock_res.status_code != 200:
+        print(f"[!] Lock rejected ({lock_res.status_code}): {lock_res.text}")
         return False
         
-    hold_data = lock_res.json()
-    reservation_id = hold_data.get("reservationId") or hold_data.get("holdId")
-    print(f"[+] SLOT LOCKED SUCCESSFULLY! Reservation ID: {reservation_id}")
+    lock_data = lock_res.json()
+    locked_session_id = lock_data.get("lockedTeeTimesSessionId")
+    booking_tx_id = lock_data.get("bookingTransactionId")
+    tx_id = lock_data.get("transactionId")
+    
+    if not locked_session_id:
+        print("[!] Lock response missing lockedTeeTimesSessionId.")
+        return False
 
-    # Phase 2: Finalize / Confirm Booking
-    confirm_url = f"{ONLINE_API}/ConfirmReservation"
-    confirm_payload = {
-        "reservationId": reservation_id,
-        "players": 4,
-        "holes": 18
+    print(f"[+] SLOT LOCKED SUCCESSFULLY! Session: {locked_session_id}")
+
+    # Phase 2: Finalize Reservation Payload
+    confirm_url = f"{ONLINE_API}/ReserveTeeTimes"
+    reserve_payload = {
+        "affiliateId": None,
+        "bookingTransactionId": booking_tx_id,
+        "cancelReservationLink": f"{BASE_URL}/onlineresweb/auth/verify-email?returnUrl=cancel-booking",
+        "finalizeSaleModel": {
+            "acct": "10000000000000000000000000006",
+            "playerId": 0,
+            "isGuest": False,
+        },
+        "homePageLink": f"{BASE_URL}/onlineresweb/",
+        "lockedTeeTimesSessionId": locked_session_id,
+        "sessionGuid": None,
+        "transactionId": tx_id,
     }
     
-    confirm_res = await client.post(confirm_url, json=confirm_payload, headers=headers)
-    if confirm_res.status_code in (200, 201):
+    confirm_res = await client.post(confirm_url, json=reserve_payload, headers=headers)
+    if confirm_res.status_code == 200:
         print(f"\n==================================================")
         print(f"[🎉] TEE TIME CONFIRMED & BOOKED FOR 4 PLAYERS!")
         print(f"     Time: {slot_time}")
-        print(f"     Reservation ID: {reservation_id}")
         print(f"==================================================\n")
         return True
     else:
-        print(f"[!] Confirmation failed ({confirm_res.status_code}): {confirm_res.text}")
+        print(f"[!] Final reservation failed ({confirm_res.status_code}): {confirm_res.text}")
         return False
 
 
@@ -119,7 +140,7 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
                 if slots and isinstance(slots, list) and len(slots) > 0:
                     print(f"\n[!] TEE SHEET OPENED AT {now_str}! (Attempt #{poll_count})")
 
-                    # 1. Filter for 4-player capacity
+                    # Filter for 4-player capacity
                     four_player_slots = [
                         s for s in slots 
                         if s.get("maxPlayers", 4) >= 4 or s.get("pax", 4) >= 4
@@ -130,15 +151,15 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
                         await asyncio.sleep(2.0)
                         continue
 
-                    # 2. Sort chronologically (earliest first)
+                    # Sort chronologically (earliest first)
                     four_player_slots.sort(key=lambda x: x.get("startTime"))
 
-                    # 3. Execute two-phase reservation on earliest available
+                    # Execute two-phase reservation on earliest available
                     for slot in four_player_slots:
                         success = await execute_two_phase_booking(client, headers, slot)
                         if success:
                             return True
-                        print(f"[!] Slot {slot.get('startTime')} taken. Trying next earliest...")
+                        print(f"[!] Slot {slot.get('startTime')} taken or locked. Retrying next earliest...")
 
             elif res.status_code == 401:
                 # Token expired during long-running poll -> Refresh headers
@@ -156,11 +177,11 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
 
 
 async def main():
-    # Targets 5 days out from current execution date
     target_date = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
     print(f"[*] Target Booking Date set to: {target_date}")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    # verify=False bypasses OpenSSL self-signed certificate errors on host runners
+    async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
         try:
             headers = await get_authenticated_headers(client)
             booked = await adaptive_poll_and_book(client, headers, target_date)
