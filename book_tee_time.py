@@ -23,15 +23,14 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
     login_url = f"{IDENTITY_URL}/connect/token"
     
     # CPS IdentityServer expects token credentials via URL parameters
-    login_payload = {
-        "grant_type": "password",
-        "username": GOLF_USERNAME,
-        "password": GOLF_PASSWORD,
-        "client_id": "cps-web",
-        "client_secret": "secret",
-        "scope": "openid profile email onlinereservation",
-    }
-    
+   login_payload = {
+    "grant_type": "password",
+    "username": GOLF_USERNAME,
+    "password": GOLF_PASSWORD,
+    "client_id": "js1",
+    "client_secret": "v4secret",
+    "scope": "openid profile onlinereservation sale inventory sh customer email recommend references",
+}   
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
