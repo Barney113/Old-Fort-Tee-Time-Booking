@@ -19,7 +19,6 @@ if not GOLF_USERNAME or not GOLF_PASSWORD:
 
 
 async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
-    """Authenticates against CPS IdentityServer using URL parameters for client credentials."""
     login_url = f"{IDENTITY_URL}/connect/token"
 
     login_payload = {
@@ -63,12 +62,10 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
 
 
 async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, selected_slot: dict) -> bool:
-    """Executes Phase 1 (LockTeeTime) and Phase 2 (ReserveTeeTimes) for a selected slot."""
     slot_time = selected_slot.get("startTime", "Unknown Time")
 
     print(f"\n[*] ATTEMPTING LOCK on slot: {slot_time}")
 
-    # Phase 1: Lock Tee Time
     lock_url = f"{ONLINE_API}/LockTeeTime"
     lock_payload = {
         "teeSheetId": selected_slot.get("teeSheetId"),
@@ -91,9 +88,9 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
         print("[!] Lock response missing lockedTeeTimesSessionId.")
         return False
 
-    print(f"[+] SLOT LOCKED SUCCESSFULLY! Session: {locked_session_id}")
+    print(f"[+] SLOT LOCKED! Session: {locked_session_id}")
+    print(f"[*] Lock response dump: {lock_data}")
 
-    # Phase 2: Finalize Reservation
     confirm_url = f"{ONLINE_API}/ReserveTeeTimes"
     reserve_payload = {
         "affiliateId": None,
@@ -110,10 +107,12 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
         "transactionId": tx_id,
     }
 
+    print(f"[*] Reserve payload: {reserve_payload}")
+
     confirm_res = await client.post(confirm_url, json=reserve_payload, headers=headers)
     if confirm_res.status_code == 200:
         print(f"\n==================================================")
-        print(f"[🎉] TEE TIME CONFIRMED & BOOKED FOR 4 PLAYERS!")
+        print(f"[SUCCESS] TEE TIME BOOKED!")
         print(f"     Time: {slot_time}")
         print(f"==================================================\n")
         return True
@@ -122,70 +121,55 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
         return False
 
 
-async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, target_date: str):
-    """Monitors the API indefinitely with low-frequency requests until tee times drop,
-    then locks the earliest 4-player slot immediately.
-    """
-    search_url = f"{ONLINE_API}/GetTeeTimes?date={target_date}&holes=18"
-
-    print(f"[*] Starting Passive Monitor for {target_date} (Checking every 30s)...")
-
-    poll_count = 0
-
-    while True:
-        try:
-            poll_count += 1
-            now_str = datetime.now().strftime("%H:%M:%S")
-            res = await client.get(search_url, headers=headers)
-
-            if res.status_code == 200:
-                slots = res.json()
-
-                if slots and isinstance(slots, list) and len(slots) > 0:
-                    print(f"\n[!] TEE SHEET OPENED AT {now_str}! (Attempt #{poll_count})")
-
-                    four_player_slots = [
-                        s for s in slots
-                        if s.get("maxPlayers", 4) >= 4 or s.get("pax", 4) >= 4
-                    ]
-
-                    if not four_player_slots:
-                        print("[!] Sheet opened, but no 4-player slots found. Retrying in 2 seconds...")
-                        await asyncio.sleep(2.0)
-                        continue
-
-                    four_player_slots.sort(key=lambda x: x.get("startTime"))
-
-                    for slot in four_player_slots:
-                        success = await execute_two_phase_booking(client, headers, slot)
-                        if success:
-                            return True
-                        print(f"[!] Slot {slot.get('startTime')} taken or locked. Retrying next earliest...")
-
-            elif res.status_code == 401:
-                print(f"\n[{now_str}] Token expired during monitoring. Re-authenticating...")
-                headers = await get_authenticated_headers(client)
-
-            print(f"[{now_str}] Checked (Attempt #{poll_count}): Sheet locked. Sleeping 30s...", end="\r")
-
-            await asyncio.sleep(30.0)
-
-        except Exception as e:
-            print(f"\n[!] Monitoring network exception: {e}")
-            await asyncio.sleep(10.0)
-
-
 async def main():
-    target_date = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
-    print(f"[*] Target Booking Date set to: {target_date}")
+    target_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    print(f"[*] TEST MODE: Targeting earliest available slot on {target_date}")
 
     async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
         try:
             headers = await get_authenticated_headers(client)
-            booked = await adaptive_poll_and_book(client, headers, target_date)
 
-            if not booked:
-                print("\n[-] Monitoring ended without successful booking.")
+            search_url = f"{ONLINE_API}/GetTeeTimes?date={target_date}&holes=18"
+            print(f"[*] Fetching tee times for {target_date}...")
+            res = await client.get(search_url, headers=headers)
+
+            print(f"[*] GetTeeTimes status: {res.status_code}")
+            print(f"[*] GetTeeTimes response: {res.text[:500]}")
+
+            if res.status_code != 200:
+                print(f"[!] Failed to fetch tee times: {res.text}")
+                sys.exit(1)
+
+            slots = res.json()
+
+            if not slots or not isinstance(slots, list) or len(slots) == 0:
+                print(f"[!] No tee times available for {target_date}. Exiting.")
+                sys.exit(0)
+
+            print(f"[+] Found {len(slots)} total slots.")
+
+            four_player_slots = [
+                s for s in slots
+                if s.get("maxPlayers", 0) >= 4 or s.get("pax", 0) >= 4
+            ]
+
+            print(f"[+] {len(four_player_slots)} slots with 4-player capacity.")
+
+            if not four_player_slots:
+                print("[!] No 4-player slots available. Dumping first 3 raw slots for debugging:")
+                for s in slots[:3]:
+                    print(f"    {s}")
+                sys.exit(0)
+
+            four_player_slots.sort(key=lambda x: x.get("startTime", ""))
+            earliest = four_player_slots[0]
+            print(f"[*] Earliest 4-player slot: {earliest.get('startTime')}")
+
+            success = await execute_two_phase_booking(client, headers, earliest)
+
+            if not success:
+                print("\n[-] Test booking failed — check the error output above.")
+
         except Exception as e:
             print(f"\n[!] Critical Error: {e}")
             sys.exit(1)
