@@ -21,16 +21,16 @@ if not GOLF_USERNAME or not GOLF_PASSWORD:
 async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
     """Authenticates against CPS IdentityServer using URL parameters for client credentials."""
     login_url = f"{IDENTITY_URL}/connect/token"
-    
-    # CPS IdentityServer expects token credentials via URL parameters
-   login_payload = {
-    "grant_type": "password",
-    "username": GOLF_USERNAME,
-    "password": GOLF_PASSWORD,
-    "client_id": "js1",
-    "client_secret": "v4secret",
-    "scope": "openid profile onlinereservation sale inventory sh customer email recommend references",
-}   
+
+    login_payload = {
+        "grant_type": "password",
+        "username": GOLF_USERNAME,
+        "password": GOLF_PASSWORD,
+        "client_id": "js1",
+        "client_secret": "v4secret",
+        "scope": "openid profile onlinereservation sale inventory sh customer email recommend references",
+    }
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
@@ -40,20 +40,19 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
     }
 
     print("[*] Authenticating with CPS IdentityServer...")
-    # Send login_payload as query params and form data to satisfy strict CPS endpoint routing
     res = await client.post(login_url, params=login_payload, data=login_payload, headers=headers)
-    
+
     if res.status_code != 200:
         raise RuntimeError(f"Authentication failed ({res.status_code}): {res.text}")
-    
+
     data = res.json()
     token = data.get("access_token")
-    
+
     if not token:
         raise RuntimeError("Authentication succeeded but no access_token was returned.")
-        
+
     print("[+] Successfully authenticated.")
-    
+
     return {
         "User-Agent": headers["User-Agent"],
         "Accept": "application/json, text/plain, */*",
@@ -66,9 +65,9 @@ async def get_authenticated_headers(client: httpx.AsyncClient) -> dict:
 async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, selected_slot: dict) -> bool:
     """Executes Phase 1 (LockTeeTime) and Phase 2 (ReserveTeeTimes) for a selected slot."""
     slot_time = selected_slot.get("startTime", "Unknown Time")
-    
+
     print(f"\n[*] ATTEMPTING LOCK on slot: {slot_time}")
-    
+
     # Phase 1: Lock Tee Time
     lock_url = f"{ONLINE_API}/LockTeeTime"
     lock_payload = {
@@ -77,17 +76,17 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
         "pax": 4,
         "time": slot_time,
     }
-    
+
     lock_res = await client.post(lock_url, json=lock_payload, headers=headers)
     if lock_res.status_code != 200:
         print(f"[!] Lock rejected ({lock_res.status_code}): {lock_res.text}")
         return False
-        
+
     lock_data = lock_res.json()
     locked_session_id = lock_data.get("lockedTeeTimesSessionId")
     booking_tx_id = lock_data.get("bookingTransactionId")
     tx_id = lock_data.get("transactionId")
-    
+
     if not locked_session_id:
         print("[!] Lock response missing lockedTeeTimesSessionId.")
         return False
@@ -110,7 +109,7 @@ async def execute_two_phase_booking(client: httpx.AsyncClient, headers: dict, se
         "sessionGuid": None,
         "transactionId": tx_id,
     }
-    
+
     confirm_res = await client.post(confirm_url, json=reserve_payload, headers=headers)
     if confirm_res.status_code == 200:
         print(f"\n==================================================")
@@ -130,7 +129,7 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
     search_url = f"{ONLINE_API}/GetTeeTimes?date={target_date}&holes=18"
 
     print(f"[*] Starting Passive Monitor for {target_date} (Checking every 30s)...")
-    
+
     poll_count = 0
 
     while True:
@@ -142,13 +141,11 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
             if res.status_code == 200:
                 slots = res.json()
 
-                # TEE SHEET UNLOCKED: Non-empty slot list returned!
                 if slots and isinstance(slots, list) and len(slots) > 0:
                     print(f"\n[!] TEE SHEET OPENED AT {now_str}! (Attempt #{poll_count})")
 
-                    # Filter for 4-player capacity
                     four_player_slots = [
-                        s for s in slots 
+                        s for s in slots
                         if s.get("maxPlayers", 4) >= 4 or s.get("pax", 4) >= 4
                     ]
 
@@ -157,10 +154,8 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
                         await asyncio.sleep(2.0)
                         continue
 
-                    # Sort chronologically (earliest first)
                     four_player_slots.sort(key=lambda x: x.get("startTime"))
 
-                    # Execute two-phase reservation on earliest available
                     for slot in four_player_slots:
                         success = await execute_two_phase_booking(client, headers, slot)
                         if success:
@@ -168,13 +163,11 @@ async def adaptive_poll_and_book(client: httpx.AsyncClient, headers: dict, targe
                         print(f"[!] Slot {slot.get('startTime')} taken or locked. Retrying next earliest...")
 
             elif res.status_code == 401:
-                # Token expired during long-running poll -> Refresh headers
                 print(f"\n[{now_str}] Token expired during monitoring. Re-authenticating...")
                 headers = await get_authenticated_headers(client)
 
             print(f"[{now_str}] Checked (Attempt #{poll_count}): Sheet locked. Sleeping 30s...", end="\r")
-            
-            # Passive interval: 30 seconds
+
             await asyncio.sleep(30.0)
 
         except Exception as e:
@@ -190,7 +183,7 @@ async def main():
         try:
             headers = await get_authenticated_headers(client)
             booked = await adaptive_poll_and_book(client, headers, target_date)
-            
+
             if not booked:
                 print("\n[-] Monitoring ended without successful booking.")
         except Exception as e:
